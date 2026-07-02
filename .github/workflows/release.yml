@@ -1,20 +1,28 @@
-name: Build & Release
+name: Auto Build & Release
 
 on:
   push:
-    tags:
-      - 'v*'               # 推送 v1.0.0 等 tag 触发 release
-  workflow_dispatch:        # 允许手动触发
+    branches:
+      - main
+      - master
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'build-all.sh'
+  workflow_dispatch:
 
 jobs:
-  build-and-release:
+  auto-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # 创建 release 需要
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -22,45 +30,58 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Extract version
+      # ---- 从源码提取版本号 ----
+      - name: Extract version from AppConfig.java
         id: version
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}
+          VERSION=$(grep 'VERSION = "' src/main/java/com/rssreader/AppConfig.java | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
 
-      # ---- 标准 JAR ----
+      # ---- 检查此版本是否已发布 ----
+      - name: Check if release already exists
+        id: check
+        run: |
+          if gh release view v${{ steps.version.outputs.version }} &>/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Release v${{ steps.version.outputs.version }} already exists, skipping."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- 构建标准 JAR ----
       - name: Build standard JAR
+        if: steps.check.outputs.exists == 'false'
         run: mvn clean package -DskipTests -q
 
-      - name: Upload standard JAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: rss-reader-${{ steps.version.outputs.version }}.jar
-          path: target/rss-reader-${{ steps.version.outputs.version }}.jar
-
-      # ---- Portable 包 (内嵌 JRE) ----
+      # ---- 构建 Portable 包 ----
       - name: Build portable package
+        if: steps.check.outputs.exists == 'false'
         run: |
           chmod +x build-all.sh
           ./build-all.sh
 
-      - name: Upload portable ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: rss-reader-portable-${{ steps.version.outputs.version }}.zip
-          path: target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
-
-      # ---- 创建 GitHub Release ----
-      - name: Create Release
+      # ---- 创建 Release + 上传产物 ----
+      - name: Create Release & Upload
+        if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
         with:
           name: v${{ steps.version.outputs.version }}
-          tag_name: ${{ steps.version.outputs.tag }}
+          tag_name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
             target/rss-reader-${{ steps.version.outputs.version }}.jar
             target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Done
+        run: |
+          if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
+            echo "✅ Release already exists — skipped."
+          else
+            echo "✅ Release v${{ steps.version.outputs.version }} published!"
+          fi
