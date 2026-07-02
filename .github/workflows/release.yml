@@ -65,19 +65,7 @@ jobs:
           echo "=== Portable ZIP ==="
           ls -lh target/rss-reader-portable-${{ steps.version.outputs.version }}.zip 2>/dev/null || echo "Portable ZIP 不存在 (正常，CI 环境无 jlink 则跳过)"
 
-      # ---- 收集产物列表 ----
-      - name: Prepare release assets
-        id: assets
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          ASSETS="target/rss-reader-${{ steps.version.outputs.version }}.jar"
-          if [ -f "target/rss-reader-portable-${{ steps.version.outputs.version }}.zip" ]; then
-            ASSETS="$ASSETS,target/rss-reader-portable-${{ steps.version.outputs.version }}.zip"
-          fi
-          echo "files=$ASSETS" >> $GITHUB_OUTPUT
-          echo "Assets: $ASSETS"
-
-      # ---- 创建 Release ----
+      # ---- 创建 Release + 上传 JAR (必定存在) ----
       - name: Create Release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
@@ -85,8 +73,9 @@ jobs:
           name: v${{ steps.version.outputs.version }}
           tag_name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: ${{ steps.assets.outputs.files }}
+          files: |
+            target/rss-reader-${{ steps.version.outputs.version }}.jar
+            target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
