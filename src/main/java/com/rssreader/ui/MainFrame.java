@@ -239,6 +239,8 @@ public class MainFrame extends JFrame {
                 if (o instanceof Feed f) {
                     JMenuItem ri = new JMenuItem("刷新 " + f.getName()); ri.addActionListener(ev -> refreshFeed(f));
                     m.add(ri);
+                    JMenuItem ei = new JMenuItem("编辑 " + f.getName()); ei.addActionListener(ev -> editFeed(f));
+                    m.add(ei);
                     m.addSeparator();
                     JMenuItem di = new JMenuItem("删除 " + f.getName()); di.addActionListener(ev -> removeFeed(f));
                     m.add(di);
@@ -272,13 +274,16 @@ public class MainFrame extends JFrame {
             if (o instanceof Feed f) {
                 setFont(getFont().deriveFont(Font.BOLD, 13));
                 setForeground(sel ? Color.WHITE : FEED_FG);
-                setText("<html>📰 " + MainFrame.escHtml(f.getName()) + "  <font color='#aaa'>" + f.getArticleCount() + "</font></html>");
+                String name = f.getName();
+                if (name.length() > MAX_TITLE_LEN) name = name.substring(0, MAX_TITLE_LEN) + "...";
+                setText("<html><nobr>📰 " + MainFrame.escHtml(name)
+                        + "  <font color='#aaa'>" + f.getArticleCount() + "</font></nobr></html>");
             } else if (o instanceof Article a) {
                 setFont(getFont().deriveFont(Font.PLAIN, 12));
                 setForeground(sel ? Color.WHITE : ARTICLE_FG);
                 String t = a.getTitle();
                 if (t.length() > MAX_TITLE_LEN) t = t.substring(0, MAX_TITLE_LEN) + "...";
-                setText("<html>• " + MainFrame.escHtml(t) + "</html>");
+                setText("<html><nobr>• " + MainFrame.escHtml(t) + "</nobr></html>");
             }
             return this;
         }
@@ -358,7 +363,7 @@ public class MainFrame extends JFrame {
     }
 
     private void showAddFeedDialog() {
-        String[] r = AddFeedDialog.showDialog(this);
+        String[] r = AddFeedDialog.showAddDialog(this);
         if (r == null) return;
         String name = r[0], url = r[1];
         for (Feed f : feeds) {
@@ -384,6 +389,27 @@ public class MainFrame extends JFrame {
         else if (n.getUserObject() instanceof Article a) {
             for (Feed f : feeds) if (f.getArticles().contains(a)) { removeFeed(f); return; }
         }
+    }
+
+    private void editFeed(Feed feed) {
+        String[] r = AddFeedDialog.showEditDialog(this, feed.getName(), feed.getUrl());
+        if (r == null) return;
+        String newName = r[0], newUrl = r[1];
+        // 检查 URL 是否与其他订阅重复（排除自身）
+        for (Feed f : feeds) {
+            if (f != feed && f.getUrl().equals(newUrl)) {
+                JOptionPane.showMessageDialog(this, "该 URL 已被订阅:\n" + f.getName(),
+                        "重复订阅", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+        }
+        feed.setName(newName);
+        feed.setUrl(newUrl);
+        saveFeeds();
+        rebuildTree();
+        updateStats();
+        refreshFeed(feed);
+        setStatus("已更新订阅: " + feed.getName());
     }
 
     private void removeFeed(Feed feed) {
