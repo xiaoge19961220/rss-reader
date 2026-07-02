@@ -75,7 +75,7 @@ public class ArticleTableModel extends AbstractTableModel {
 
     private String formatDate(LocalDateTime dateTime) {
         if (dateTime == null) {
-            return "";
+            return "—";
         }
         return dateTime.format(DATE_FORMATTER);
     }

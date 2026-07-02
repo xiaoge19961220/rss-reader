@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <name>RSS Reader</name>
-    <description>A desktop RSS feed reader with Swing UI</description>
+    <description>自由·RSS阅读器 — Java Swing 桌面 RSS 订阅阅读器</description>
 
     <properties>
         <maven.compiler.release>17</maven.compiler.release>
@@ -18,7 +18,6 @@
     </properties>
 
     <dependencies>
-        <!-- Rome RSS/Atom parsing library -->
         <dependency>
             <groupId>com.rometools</groupId>
             <artifactId>rome</artifactId>
@@ -27,8 +26,8 @@
     </dependencies>
 
     <build>
+        <finalName>rss-reader-${project.version}</finalName>
         <plugins>
-            <!-- Compiler plugin -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -39,7 +38,6 @@
                 </configuration>
             </plugin>
 
-            <!-- JAR plugin with main class -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -53,7 +51,6 @@
                 </configuration>
             </plugin>
 
-            <!-- Shade plugin to create fat JAR with dependencies -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -61,9 +58,7 @@
                 <executions>
                     <execution>
                         <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
+                        <goals><goal>shade</goal></goals>
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">

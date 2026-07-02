@@ -6,6 +6,7 @@ com/rssreader/ui/MainFrame.class
 com/rssreader/ui/MainFrame$3.class
 com/rssreader/RssReaderApp.class
 com/rssreader/model/Article.class
+com/rssreader/ui/MainFrame$FeedTreeRenderer.class
 com/rssreader/ui/MainFrame$4.class
 com/rssreader/ui/MainFrame$2.class
 com/rssreader/util/FeedStorage.class

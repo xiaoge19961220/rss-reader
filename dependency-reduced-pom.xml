@@ -5,8 +5,9 @@
   <artifactId>rss-reader</artifactId>
   <name>RSS Reader</name>
   <version>1.0.0</version>
-  <description>A desktop RSS feed reader with Swing UI</description>
+  <description>自由·RSS阅读器 — Java Swing 桌面 RSS 订阅阅读器</description>
   <build>
+    <finalName>rss-reader-${project.version}</finalName>
     <plugins>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>

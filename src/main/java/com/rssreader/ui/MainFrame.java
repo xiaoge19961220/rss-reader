@@ -8,8 +8,7 @@ import com.rssreader.util.FeedStorage;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
-import javax.swing.event.ListSelectionEvent;
-import javax.swing.table.TableColumnModel;
+import javax.swing.tree.*;
 import java.awt.*;
 import java.awt.Desktop;
 import java.awt.event.KeyEvent;
@@ -19,863 +18,606 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
 
 /**
- * RSS 阅读器主窗口。
- * 包含订阅列表、文章表格和内容阅读面板。
+ * RSS 阅读器主窗口 — 树形订阅 + 内容阅读面板。
  */
 public class MainFrame extends JFrame {
 
-    // Services
+    private static final int MAX_TITLE_LEN = 30;
+
+    // 共享静态不可变对象，减少分配
+    private static final Color COLOR_BORDER   = new Color(220, 220, 224);
+    private static final Color COLOR_TOOLBAR  = new Color(250, 251, 252);
+    private static final Color COLOR_BTN_BG   = Color.WHITE;
+    private static final Color COLOR_BTN_BDR  = new Color(210, 210, 215);
+    private static final Color COLOR_TITLE_FG = new Color(60, 60, 65);
+    private static final Color COLOR_STATUSBAR = new Color(248, 249, 250);
+    private static final Color COLOR_STATUS   = new Color(120, 120, 125);
+    private static final Color COLOR_UNREAD   = new Color(140, 140, 145);
+    private static final Font  FONT_TITLE     = new Font("PingFang SC", Font.BOLD, 13);
+    private static final Font  FONT_TREE      = new Font("PingFang SC", Font.PLAIN, 13);
+
     private final FeedService feedService;
 
-    // Data
-    private final List<Feed> feeds;
-    private final DefaultListModel<Feed> feedListModel;
+    private final List<Feed> feeds = new ArrayList<>();
+    private DefaultTreeModel treeModel;
+    private DefaultMutableTreeNode rootNode;
 
-    // UI Components
-    private JList<Feed> feedList;
-    private JTable articleTable;
-    private ArticleTableModel articleTableModel;
+    private JTree feedTree;
     private JEditorPane contentPane;
     private JLabel statusLabel;
-    private JButton addButton;
     private JButton removeButton;
     private JButton refreshAllButton;
     private JButton refreshFeedButton;
-    private JLabel unreadLabel;
+    private JLabel statsLabel;
 
-    // Currently selected feed and article
     private Feed selectedFeed;
     private Article selectedArticle;
 
     public MainFrame() {
         feedService = new FeedService();
-        feeds = new ArrayList<>();
-        feedListModel = new DefaultListModel<>();
-
+        rootNode = new DefaultMutableTreeNode("root");
         initUI();
         loadFeeds();
         refreshAllFeeds();
 
-        setTitle("RSS 阅读器");
+        setTitle("自由·RSS阅读器");
         setSize(1100, 750);
         setMinimumSize(new Dimension(800, 500));
         setLocationRelativeTo(null);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
     }
 
-    // ==================== UI Initialization ====================
+    // ==================== UI ====================
 
     private void initUI() {
         setJMenuBar(createMenuBar());
-
         JPanel mainPanel = new JPanel(new BorderLayout());
         mainPanel.add(createToolBar(), BorderLayout.NORTH);
 
-        // 主分割面板: 订阅列表 | 文章+内容
-        JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        mainSplitPane.setLeftComponent(createFeedPanel());
-        mainSplitPane.setRightComponent(createArticlePanel());
-        mainSplitPane.setDividerLocation(260);
-        mainSplitPane.setDividerSize(1);
-        mainSplitPane.setBorder(null);
-        mainPanel.add(mainSplitPane, BorderLayout.CENTER);
-
-        // Status bar
+        JSplitPane split = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
+        split.setLeftComponent(createTreePanel());
+        split.setRightComponent(createContentPanel());
+        split.setDividerLocation(300);
+        split.setDividerSize(1);
+        split.setBorder(null);
+        mainPanel.add(split, BorderLayout.CENTER);
         mainPanel.add(createStatusBar(), BorderLayout.SOUTH);
-
         setContentPane(mainPanel);
     }
 
     private JMenuBar createMenuBar() {
-        JMenuBar menuBar = new JMenuBar();
+        JMenuBar mb = new JMenuBar();
 
-        // 文件菜单
-        JMenu fileMenu = new JMenu("文件");
-        fileMenu.setMnemonic(KeyEvent.VK_F);
+        JMenu file = new JMenu("文件"); file.setMnemonic(KeyEvent.VK_F);
+        JMenuItem add = new JMenuItem("添加订阅...", KeyEvent.VK_A);
+        add.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_N, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
+        add.addActionListener(e -> showAddFeedDialog());
+        file.add(add);
+        JMenuItem imp = new JMenuItem("导入 OPML...", KeyEvent.VK_I); imp.addActionListener(e -> importOpml());
+        file.add(imp);
+        JMenuItem exp = new JMenuItem("导出 OPML...", KeyEvent.VK_E); exp.addActionListener(e -> exportOpml());
+        file.add(exp);
+        file.addSeparator();
+        JMenuItem exit = new JMenuItem("退出", KeyEvent.VK_X);
+        exit.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Q, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
+        exit.addActionListener(e -> System.exit(0));
+        file.add(exit);
+        mb.add(file);
 
-        JMenuItem addFeedItem = new JMenuItem("添加订阅...", KeyEvent.VK_A);
-        addFeedItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_N, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
-        addFeedItem.addActionListener(e -> showAddFeedDialog());
-        fileMenu.add(addFeedItem);
+        JMenu feedsMenu = new JMenu("订阅"); feedsMenu.setMnemonic(KeyEvent.VK_E);
+        JMenuItem ra = new JMenuItem("刷新全部", KeyEvent.VK_R);
+        ra.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
+        ra.addActionListener(e -> refreshAllFeeds());
+        feedsMenu.add(ra);
+        JMenuItem rf = new JMenuItem("刷新选中订阅", KeyEvent.VK_S); rf.addActionListener(e -> refreshSelectedFeed());
+        feedsMenu.add(rf);
+        mb.add(feedsMenu);
 
-        JMenuItem importOpmlItem = new JMenuItem("导入 OPML...", KeyEvent.VK_I);
-        importOpmlItem.addActionListener(e -> importOpml());
-        fileMenu.add(importOpmlItem);
-
-        JMenuItem exportOpmlItem = new JMenuItem("导出 OPML...", KeyEvent.VK_E);
-        exportOpmlItem.addActionListener(e -> exportOpml());
-        fileMenu.add(exportOpmlItem);
-
-        fileMenu.addSeparator();
-
-        JMenuItem exitItem = new JMenuItem("退出", KeyEvent.VK_X);
-        exitItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Q, Toolkit.getDefaultToolkit().getMenuShortcutKeyMaskEx()));
-        exitItem.addActionListener(e -> System.exit(0));
-        fileMenu.add(exitItem);
-
-        menuBar.add(fileMenu);
-
-        // 订阅菜单
-        JMenu feedsMenu = new JMenu("订阅");
-        feedsMenu.setMnemonic(KeyEvent.VK_E);
-
-        JMenuItem refreshAllItem = new JMenuItem("刷新全部", KeyEvent.VK_R);
-        refreshAllItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_F5, 0));
-        refreshAllItem.addActionListener(e -> refreshAllFeeds());
-        feedsMenu.add(refreshAllItem);
-
-        JMenuItem refreshFeedItem = new JMenuItem("刷新选中订阅", KeyEvent.VK_S);
-        refreshFeedItem.addActionListener(e -> refreshSelectedFeed());
-        feedsMenu.add(refreshFeedItem);
-
-        feedsMenu.addSeparator();
-
-        JMenuItem markAllReadItem = new JMenuItem("全部标记已读", KeyEvent.VK_M);
-        markAllReadItem.addActionListener(e -> markAllAsRead());
-        feedsMenu.add(markAllReadItem);
-
-        menuBar.add(feedsMenu);
-
-        // 帮助菜单
-        JMenu helpMenu = new JMenu("帮助");
-        helpMenu.setMnemonic(KeyEvent.VK_H);
-
-        JMenuItem aboutItem = new JMenuItem("关于 RSS Reader", KeyEvent.VK_A);
-        aboutItem.addActionListener(e -> showAboutDialog());
-        helpMenu.add(aboutItem);
-
-        menuBar.add(helpMenu);
-
-        return menuBar;
+        JMenu help = new JMenu("帮助"); help.setMnemonic(KeyEvent.VK_H);
+        JMenuItem about = new JMenuItem("关于 RSS Reader", KeyEvent.VK_A); about.addActionListener(e -> showAboutDialog());
+        help.add(about);
+        mb.add(help);
+        return mb;
     }
 
     private JToolBar createToolBar() {
-        JToolBar toolBar = new JToolBar();
-        toolBar.setFloatable(false);
-        toolBar.setBorder(new EmptyBorder(6, 8, 6, 8));
-        toolBar.setBackground(new Color(250, 251, 252));
+        JToolBar tb = new JToolBar();
+        tb.setFloatable(false);
+        tb.setBorder(new EmptyBorder(6, 8, 6, 8));
+        tb.setBackground(COLOR_TOOLBAR);
 
-        addButton = new JButton("＋ 添加订阅");
-        addButton.setToolTipText("添加新的 RSS 订阅源");
-        addButton.addActionListener(e -> showAddFeedDialog());
-        styleToolbarButton(addButton);
-        toolBar.add(addButton);
+        JButton addBtn = new JButton("＋ 添加订阅");
+        addBtn.setToolTipText("添加新的 RSS 订阅源");
+        addBtn.addActionListener(e -> showAddFeedDialog());
+        styleBtn(addBtn); tb.add(addBtn);
 
         removeButton = new JButton("✕ 删除");
         removeButton.setToolTipText("删除选中的订阅");
         removeButton.setEnabled(false);
         removeButton.addActionListener(e -> removeSelectedFeed());
-        styleToolbarButton(removeButton);
-        toolBar.add(removeButton);
+        styleBtn(removeButton); tb.add(removeButton);
 
-        toolBar.addSeparator();
+        tb.addSeparator();
 
         refreshAllButton = new JButton("↻ 刷新全部");
         refreshAllButton.setToolTipText("刷新所有订阅");
         refreshAllButton.addActionListener(e -> refreshAllFeeds());
-        styleToolbarButton(refreshAllButton);
-        toolBar.add(refreshAllButton);
+        styleBtn(refreshAllButton); tb.add(refreshAllButton);
 
         refreshFeedButton = new JButton("↻ 刷新订阅");
         refreshFeedButton.setToolTipText("刷新选中的订阅");
         refreshFeedButton.setEnabled(false);
         refreshFeedButton.addActionListener(e -> refreshSelectedFeed());
-        styleToolbarButton(refreshFeedButton);
-        toolBar.add(refreshFeedButton);
+        styleBtn(refreshFeedButton); tb.add(refreshFeedButton);
 
-        toolBar.addSeparator();
+        tb.addSeparator();
 
-        unreadLabel = new JLabel("  暂无订阅  ");
-        unreadLabel.setForeground(new Color(140, 140, 145));
-        unreadLabel.setFont(unreadLabel.getFont().deriveFont(Font.PLAIN, 12));
-        toolBar.add(unreadLabel);
-
-        return toolBar;
+        statsLabel = new JLabel("  暂无订阅  ");
+        statsLabel.setForeground(COLOR_UNREAD);
+        statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, 12));
+        tb.add(statsLabel);
+        return tb;
     }
 
-    private void styleToolbarButton(JButton button) {
-        button.setFont(button.getFont().deriveFont(Font.PLAIN, 12));
-        button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(210, 210, 215), 1),
+    private static void styleBtn(JButton b) {
+        b.setFont(b.getFont().deriveFont(Font.PLAIN, 12));
+        b.setFocusPainted(false);
+        b.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(COLOR_BTN_BDR, 1),
                 BorderFactory.createEmptyBorder(5, 12, 5, 12)));
-        button.setBackground(Color.WHITE);
-        button.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        b.setBackground(COLOR_BTN_BG);
+        b.setCursor(new Cursor(Cursor.HAND_CURSOR));
     }
 
-    private JPanel createFeedPanel() {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(220, 220, 224)),
-                "订阅列表", TitledBorder.LEFT, TitledBorder.TOP,
-                new Font("PingFang SC", Font.BOLD, 13), new Color(60, 60, 65)));
+    // ---- 左侧树 ----
 
-        feedList = new JList<>(feedListModel);
-        feedList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        feedList.setFixedCellHeight(36);
-        feedList.setCellRenderer(new DefaultListCellRenderer() {
-            @Override
-            public Component getListCellRendererComponent(JList<?> list, Object value,
-                                                          int index, boolean isSelected, boolean cellHasFocus) {
-                super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
-                setBorder(new EmptyBorder(6, 12, 6, 12));
-                if (value instanceof Feed feed) {
-                    String unreadBadge = feed.getUnreadCount() > 0
-                            ? "  <span style='background:#3b82f6;color:#fff;padding:1px 7px;border-radius:10px;font-size:11px;'>" + feed.getUnreadCount() + "</span>"
-                            : "";
-                    setText("<html><div style='padding:2px 0;'>" + escapeHtml(feed.getName()) + unreadBadge + "</div></html>");
-                    if (feed.getUnreadCount() > 0 && !isSelected) {
-                        setFont(getFont().deriveFont(Font.BOLD));
-                    }
-                    setIcon(null);
-                }
-                return this;
+    private JPanel createTreePanel() {
+        JPanel p = new JPanel(new BorderLayout());
+        p.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(COLOR_BORDER),
+                "订阅列表", TitledBorder.LEFT, TitledBorder.TOP, FONT_TITLE, COLOR_TITLE_FG));
+
+        treeModel = new DefaultTreeModel(rootNode);
+        feedTree = new JTree(treeModel);
+        feedTree.setRootVisible(false);
+        feedTree.setShowsRootHandles(true);
+        feedTree.setRowHeight(30);
+        feedTree.setFont(FONT_TREE);
+        feedTree.setCellRenderer(new FeedTreeRenderer());
+
+        feedTree.addTreeSelectionListener(e -> {
+            DefaultMutableTreeNode n = (DefaultMutableTreeNode) feedTree.getLastSelectedPathComponent();
+            if (n == null) return;
+            Object o = n.getUserObject();
+            if (o instanceof Feed f) {
+                selectedFeed = f; selectedArticle = null;
+                removeButton.setEnabled(true); refreshFeedButton.setEnabled(true);
+                setStatus("订阅: " + f.getName() + " (" + f.getArticleCount() + " 篇文章)");
+                contentPane.setText(welcomeHtml());
+            } else if (o instanceof Article a) {
+                selectedArticle = a; selectedFeed = null;
+                removeButton.setEnabled(false); refreshFeedButton.setEnabled(true);
+                displayArticleContent(a);
+                setStatus("文章: " + a.getTitle());
+            } else {
+                removeButton.setEnabled(false); refreshFeedButton.setEnabled(false);
             }
         });
 
-        feedList.addListSelectionListener(this::onFeedSelectionChanged);
-        feedList.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (e.getClickCount() == 2) {
-                    int index = feedList.locationToIndex(e.getPoint());
-                    if (index >= 0) {
-                        refreshFeed(feeds.get(index));
-                    }
-                }
+        feedTree.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() != 2) return;
+                TreePath path = feedTree.getPathForLocation(e.getX(), e.getY());
+                if (path == null) return;
+                DefaultMutableTreeNode n = (DefaultMutableTreeNode) path.getLastPathComponent();
+                if (n == null) return;
+                if (n.getUserObject() instanceof Article a) openInBrowser(a);
+                else if (n.getUserObject() instanceof Feed f) refreshFeed(f);
             }
         });
 
-        JScrollPane scrollPane = new JScrollPane(feedList);
-        scrollPane.setBorder(null);
-        panel.add(scrollPane, BorderLayout.CENTER);
+        // 右键菜单
+        feedTree.addMouseListener(new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e)  { if (e.isPopupTrigger()) popup(e); }
+            @Override public void mouseReleased(MouseEvent e) { if (e.isPopupTrigger()) popup(e); }
+            private void popup(MouseEvent e) {
+                TreePath path = feedTree.getPathForLocation(e.getX(), e.getY());
+                if (path == null) return;
+                Object o = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+                JPopupMenu m = new JPopupMenu();
+                if (o instanceof Feed f) {
+                    JMenuItem ri = new JMenuItem("刷新 " + f.getName()); ri.addActionListener(ev -> refreshFeed(f));
+                    m.add(ri);
+                    m.addSeparator();
+                    JMenuItem di = new JMenuItem("删除 " + f.getName()); di.addActionListener(ev -> removeFeed(f));
+                    m.add(di);
+                } else if (o instanceof Article a) {
+                    JMenuItem oi = new JMenuItem("在浏览器中打开"); oi.addActionListener(ev -> openInBrowser(a));
+                    m.add(oi);
+                }
+                m.show(feedTree, e.getX(), e.getY());
+            }
+        });
 
-        return panel;
+        p.add(new JScrollPane(feedTree) {{ setBorder(null); }}, BorderLayout.CENTER);
+        return p;
     }
 
-    private JPanel createArticlePanel() {
-        JPanel panel = new JPanel(new BorderLayout());
+    // ---- 渲染器（极简） ----
 
-        // 文章表格
-        articleTableModel = new ArticleTableModel();
-        articleTable = new JTable(articleTableModel);
-        articleTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        articleTable.setAutoCreateRowSorter(true);
-        articleTable.getTableHeader().setReorderingAllowed(false);
-        articleTable.setRowHeight(28);
-        articleTable.setShowGrid(false);
-        articleTable.setIntercellSpacing(new Dimension(0, 0));
-        articleTable.setFillsViewportHeight(true);
+    private static class FeedTreeRenderer extends DefaultTreeCellRenderer {
+        private static final Color FEED_FG = new Color(50, 55, 65);
+        private static final Color ARTICLE_FG = new Color(50, 50, 55);
 
-        // Set column widths
-        TableColumnModel columnModel = articleTable.getColumnModel();
-        columnModel.getColumn(0).setPreferredWidth(500); // Title
-        columnModel.getColumn(1).setPreferredWidth(140); // Date
-        columnModel.getColumn(2).setPreferredWidth(150); // Feed
+        @Override
+        public Component getTreeCellRendererComponent(JTree tree, Object value,
+                                                      boolean sel, boolean expanded,
+                                                      boolean leaf, int row, boolean hasFocus) {
+            super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
+            setBorder(new EmptyBorder(2, 6, 2, 6));
+            setIcon(null);
+            Object o = ((DefaultMutableTreeNode) value).getUserObject();
 
-        articleTable.getSelectionModel().addListSelectionListener(this::onArticleSelectionChanged);
-
-        // Double-click to open in browser
-        articleTable.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                if (e.getClickCount() == 2) {
-                    openSelectedArticleInBrowser();
-                }
+            if (o instanceof Feed f) {
+                setFont(getFont().deriveFont(Font.BOLD, 13));
+                setForeground(sel ? Color.WHITE : FEED_FG);
+                setText("<html>📰 " + MainFrame.escHtml(f.getName()) + "  <font color='#aaa'>" + f.getArticleCount() + "</font></html>");
+            } else if (o instanceof Article a) {
+                setFont(getFont().deriveFont(Font.PLAIN, 12));
+                setForeground(sel ? Color.WHITE : ARTICLE_FG);
+                String t = a.getTitle();
+                if (t.length() > MAX_TITLE_LEN) t = t.substring(0, MAX_TITLE_LEN) + "...";
+                setText("<html>• " + MainFrame.escHtml(t) + "</html>");
             }
-        });
+            return this;
+        }
+    }
 
-        JScrollPane tableScrollPane = new JScrollPane(articleTable);
-        tableScrollPane.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(220, 220, 224)),
-                "文章列表", TitledBorder.LEFT, TitledBorder.TOP,
-                new Font("PingFang SC", Font.BOLD, 13), new Color(60, 60, 65)));
+    // ---- 右侧内容 ----
 
-        // 文章内容面板
+    private JPanel createContentPanel() {
+        JPanel p = new JPanel(new BorderLayout());
         contentPane = new JEditorPane();
         contentPane.setContentType("text/html");
         contentPane.setEditable(false);
         contentPane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+        contentPane.setText(welcomeHtml());
+        JScrollPane sp = new JScrollPane(contentPane);
+        sp.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(COLOR_BORDER),
+                "文章内容", TitledBorder.LEFT, TitledBorder.TOP, FONT_TITLE, COLOR_TITLE_FG));
+        p.add(sp, BorderLayout.CENTER);
+        return p;
+    }
 
-        // 欢迎页 HTML
-        String welcomeHtml = """
-                <html>
-                <head><style>
-                body { font-family: "PingFang SC", -apple-system, sans-serif; margin: 0;
-                       background: linear-gradient(135deg, #f8fafc 0%, #e8ecf1 100%); }
-                .welcome-card { max-width: 420px; margin: 80px auto; padding: 40px;
-                       background: white; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.06);
-                       text-align: center; }
-                .welcome-icon { font-size: 48px; margin-bottom: 16px; }
-                .welcome-title { font-size: 20px; color: #1a1a2e; font-weight: 600; margin: 0 0 8px 0; }
-                .welcome-sub { font-size: 13px; color: #888; line-height: 1.8; margin: 0; }
-                .welcome-hint { margin-top: 24px; padding: 14px 18px; background: #f0f4ff;
-                       border-radius: 10px; font-size: 12px; color: #5b7cfa; }
-                .welcome-hint b { color: #3b5fd9; }
-                </style></head>
-                <body>
-                <div class="welcome-card">
-                <div class="welcome-icon">📰</div>
-                <h2 class="welcome-title">RSS 阅读器</h2>
-                <p class="welcome-sub">选择左侧订阅源查看文章<br>点击文章即可阅读正文内容</p>
-                <div class="welcome-hint">
-                按 <b>⌘N</b> 或点击 <b>＋ 添加订阅</b> 来添加你的第一个订阅源
-                </div>
-                </div>
-                </body>
-                </html>
-                """;
-        contentPane.setText(welcomeHtml);
-
-        JScrollPane contentScrollPane = new JScrollPane(contentPane);
-        contentScrollPane.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(220, 220, 224)),
-                "文章内容", TitledBorder.LEFT, TitledBorder.TOP,
-                new Font("PingFang SC", Font.BOLD, 13), new Color(60, 60, 65)));
-
-        // 分割面板: 文章列表 | 文章内容
-        JSplitPane rightSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
-        rightSplitPane.setTopComponent(tableScrollPane);
-        rightSplitPane.setBottomComponent(contentScrollPane);
-        rightSplitPane.setDividerLocation(360);
-        rightSplitPane.setDividerSize(1);
-        rightSplitPane.setBorder(null);
-
-        panel.add(rightSplitPane, BorderLayout.CENTER);
-
-        return panel;
+    private String welcomeHtml() {
+        return "<html><head><style>" +
+                "body{font-family:\"PingFang SC\",sans-serif;margin:0;background:linear-gradient(135deg,#f8fafc,#e8ecf1)}" +
+                ".card{max-width:400px;margin:80px auto;padding:40px;background:#fff;border-radius:16px;" +
+                "box-shadow:0 4px 24px rgba(0,0,0,.06);text-align:center}" +
+                ".icon{font-size:48px;margin-bottom:16px}.title{font-size:20px;color:#1a1a2e;font-weight:600}" +
+                ".sub{font-size:13px;color:#888;line-height:1.8}" +
+                ".hint{margin-top:24px;padding:14px 18px;background:#f0f4ff;border-radius:10px;font-size:12px;color:#5b7cfa}" +
+                ".hint b{color:#3b5fd9}</style></head><body>" +
+                "<div class=card><div class=icon>📰</div><h2 class=title>RSS 阅读器</h2>" +
+                "<p class=sub>展开左侧订阅源<br>点击文章即可阅读</p>" +
+                "<div class=hint>按 <b>⌘N</b> 或点击 <b>＋ 添加订阅</b> 开始</div></div></body></html>";
     }
 
     private JPanel createStatusBar() {
-        JPanel statusBar = new JPanel(new BorderLayout());
-        statusBar.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, new Color(220, 220, 224)));
-        statusBar.setBackground(new Color(248, 249, 250));
-
+        JPanel p = new JPanel(new BorderLayout());
+        p.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, COLOR_BORDER));
+        p.setBackground(COLOR_STATUSBAR);
         statusLabel = new JLabel(" 就绪");
         statusLabel.setFont(statusLabel.getFont().deriveFont(Font.PLAIN, 12));
-        statusLabel.setForeground(new Color(120, 120, 125));
+        statusLabel.setForeground(COLOR_STATUS);
         statusLabel.setBorder(new EmptyBorder(3, 8, 3, 5));
-        statusBar.add(statusLabel, BorderLayout.WEST);
-
-        return statusBar;
+        p.add(statusLabel, BorderLayout.WEST);
+        return p;
     }
 
-    // ==================== Feed Management ====================
+    // ==================== 树管理 ====================
+
+    private void rebuildTree() {
+        rootNode.removeAllChildren();
+        for (Feed f : feeds) {
+            DefaultMutableTreeNode fn = new DefaultMutableTreeNode(f);
+            for (Article a : f.getArticles()) fn.add(new DefaultMutableTreeNode(a));
+            rootNode.add(fn);
+        }
+        treeModel.reload();
+        for (int i = 0; i < feedTree.getRowCount(); i++) feedTree.expandRow(i);
+    }
+
+    // ==================== 订阅 CRUD ====================
 
     private void loadFeeds() {
         try {
-            List<Feed> savedFeeds = FeedStorage.loadFeeds();
             feeds.clear();
-            feedListModel.clear();
-            for (Feed feed : savedFeeds) {
-                feeds.add(feed);
-                feedListModel.addElement(feed);
-            }
-            if (!feeds.isEmpty()) {
-                setStatus("已加载 " + feeds.size() + " 个订阅");
-                updateUnreadLabel();
-            }
-        } catch (IOException e) {
-            setStatus("加载订阅失败: " + e.getMessage());
-        }
+            feeds.addAll(FeedStorage.loadFeeds());
+            if (!feeds.isEmpty()) setStatus("已加载 " + feeds.size() + " 个订阅");
+            rebuildTree();
+            updateStats();
+        } catch (IOException e) { setStatus("加载订阅失败: " + e.getMessage()); }
     }
 
     private void saveFeeds() {
-        try {
-            FeedStorage.saveFeeds(feeds);
-        } catch (IOException e) {
-            setStatus("保存订阅失败: " + e.getMessage());
-        }
+        try { FeedStorage.saveFeeds(feeds); }
+        catch (IOException e) { setStatus("保存订阅失败: " + e.getMessage()); }
     }
 
     private void showAddFeedDialog() {
-        String[] result = AddFeedDialog.showDialog(this);
-        if (result != null) {
-            String name = result[0];
-            String url = result[1];
-
-            // Check for duplicate
-            for (Feed existing : feeds) {
-                if (existing.getUrl().equals(url)) {
-                    JOptionPane.showMessageDialog(this,
-                            "该订阅源已经存在:\n" + existing.getName(),
-                            "重复订阅", JOptionPane.WARNING_MESSAGE);
-                    return;
-                }
+        String[] r = AddFeedDialog.showDialog(this);
+        if (r == null) return;
+        String name = r[0], url = r[1];
+        for (Feed f : feeds) {
+            if (f.getUrl().equals(url)) {
+                JOptionPane.showMessageDialog(this, "该订阅源已经存在:\n" + f.getName(),
+                        "重复订阅", JOptionPane.WARNING_MESSAGE);
+                return;
             }
-
-            Feed newFeed = new Feed(name, url);
-            feeds.add(newFeed);
-            feedListModel.addElement(newFeed);
-            saveFeeds();
-            updateUnreadLabel();
-
-            // Select and refresh the new feed
-            feedList.setSelectedValue(newFeed, true);
-            refreshFeed(newFeed);
         }
+        Feed nf = new Feed(name, url);
+        feeds.add(nf);
+        saveFeeds();
+        rebuildTree();
+        updateStats();
+        refreshFeed(nf);
     }
 
     private void removeSelectedFeed() {
-        int selectedIndex = feedList.getSelectedIndex();
-        if (selectedIndex < 0) {
-            return;
-        }
-
-        Feed feed = feeds.get(selectedIndex);
-        int confirm = JOptionPane.showConfirmDialog(this,
-                "确定要删除订阅 \"" + feed.getName() + "\" 吗?",
-                "删除订阅",
-                JOptionPane.YES_NO_OPTION,
-                JOptionPane.QUESTION_MESSAGE);
-
-        if (confirm == JOptionPane.YES_OPTION) {
-            feeds.remove(selectedIndex);
-            feedListModel.remove(selectedIndex);
-            articleTableModel.clear();
-            selectedFeed = null;
-            saveFeeds();
-            updateUnreadLabel();
-            setStatus("已删除订阅: " + feed.getName());
+        if (selectedFeed != null) { removeFeed(selectedFeed); return; }
+        DefaultMutableTreeNode n = (DefaultMutableTreeNode) feedTree.getLastSelectedPathComponent();
+        if (n == null) return;
+        if (n.getUserObject() instanceof Feed f) removeFeed(f);
+        else if (n.getUserObject() instanceof Article a) {
+            for (Feed f : feeds) if (f.getArticles().contains(a)) { removeFeed(f); return; }
         }
     }
 
-    // ==================== Feed Refresh ====================
+    private void removeFeed(Feed feed) {
+        if (JOptionPane.showConfirmDialog(this, "确定要删除订阅 \"" + feed.getName() + "\" 吗?",
+                "删除订阅", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE) != JOptionPane.YES_OPTION)
+            return;
+        feeds.remove(feed);
+        selectedFeed = null; selectedArticle = null;
+        contentPane.setText(welcomeHtml());
+        saveFeeds();
+        rebuildTree();
+        updateStats();
+        removeButton.setEnabled(false); refreshFeedButton.setEnabled(false);
+        setStatus("已删除订阅: " + feed.getName());
+    }
+
+    // ==================== 刷新 ====================
 
     private void refreshAllFeeds() {
-        if (feeds.isEmpty()) {
-            setStatus("暂无订阅可刷新，请先添加订阅!");
-            return;
-        }
-
+        if (feeds.isEmpty()) { setStatus("暂无订阅可刷新，请先添加订阅!"); return; }
         refreshAllButton.setEnabled(false);
         setStatus("正在刷新全部订阅...");
 
-        SwingWorker<List<Feed>, Feed> worker = new SwingWorker<>() {
-            private int fetched = 0;
-
+        new SwingWorker<List<Feed>, Feed>() {
             @Override
             protected List<Feed> doInBackground() {
-                List<Feed> updatedFeeds = new ArrayList<>();
-                for (Feed feed : feeds) {
-                    try {
-                        Feed updated = feedService.fetchFeed(feed.getUrl(), feed.getName());
-                        updatedFeeds.add(updated);
-                        publish(updated);
-                    } catch (Exception e) {
-                        Feed errorFeed = new Feed(feed.getName(), feed.getUrl());
-                        errorFeed.setDescription("Error: " + e.getMessage());
-                        updatedFeeds.add(errorFeed);
-                    }
-                    fetched++;
-                    setProgress((int) ((fetched / (double) feeds.size()) * 100));
+                List<Feed> uf = new ArrayList<>(feeds.size());
+                for (Feed f : feeds) {
+                    try { uf.add(feedService.fetchFeed(f.getUrl(), f.getName())); publish(uf.get(uf.size() - 1)); }
+                    catch (Exception e) { uf.add(new Feed(f.getName(), f.getUrl())); }
                 }
-                return updatedFeeds;
+                return uf;
             }
-
             @Override
             protected void process(List<Feed> chunks) {
-                for (Feed updated : chunks) {
-                    // Update the feeds list
-                    for (int i = 0; i < feeds.size(); i++) {
-                        if (feeds.get(i).getUrl().equals(updated.getUrl())) {
-                            feeds.get(i).setArticles(updated.getArticles());
-                            feeds.get(i).setDescription(updated.getDescription());
-                            feeds.get(i).setLastUpdated(updated.getLastUpdated());
-                            feeds.get(i).setUnreadCount(updated.getArticleCount());
+                for (Feed u : chunks) {
+                    for (Feed f : feeds) {
+                        if (f.getUrl().equals(u.getUrl())) {
+                            f.setArticles(u.getArticles());
+                            f.setDescription(u.getDescription());
+                            f.setLastUpdated(u.getLastUpdated());
                             break;
                         }
                     }
-                    feedList.repaint();
-                    updateUnreadLabel();
                 }
+                rebuildTree(); updateStats();
             }
-
             @Override
             protected void done() {
                 refreshAllButton.setEnabled(true);
                 try {
-                    List<Feed> result = get();
-                    int totalArticles = result.stream().mapToInt(Feed::getArticleCount).sum();
-                    setStatus("刷新完成: " + result.size() + " 个订阅, 共 " + totalArticles + " 篇文章");
-
-                    // Refresh the currently displayed articles if a feed is selected
-                    if (selectedFeed != null) {
-                        for (Feed f : feeds) {
-                            if (f.getUrl().equals(selectedFeed.getUrl())) {
-                                selectedFeed = f;
-                                articleTableModel.setArticles(f.getArticles());
-                                break;
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    setStatus("刷新订阅出错: " + e.getMessage());
-                }
-                updateUnreadLabel();
+                    List<Feed> r = get();
+                    int total = r.stream().mapToInt(Feed::getArticleCount).sum();
+                    setStatus("刷新完成: " + r.size() + " 个订阅, 共 " + total + " 篇文章");
+                } catch (Exception e) { setStatus("刷新出错: " + e.getMessage()); }
+                rebuildTree(); updateStats();
             }
-        };
-        worker.execute();
+        }.execute();
     }
 
     private void refreshSelectedFeed() {
-        Feed feed = feedList.getSelectedValue();
-        if (feed != null) {
-            refreshFeed(feed);
+        if (selectedFeed != null) refreshFeed(selectedFeed);
+        else {
+            DefaultMutableTreeNode n = (DefaultMutableTreeNode) feedTree.getLastSelectedPathComponent();
+            if (n == null) return;
+            if (n.getUserObject() instanceof Feed f) refreshFeed(f);
+            else if (n.getUserObject() instanceof Article a) {
+                for (Feed f : feeds) if (f.getArticles().contains(a)) { refreshFeed(f); return; }
+            }
         }
     }
 
     private void refreshFeed(Feed feed) {
-        refreshFeedButton.setEnabled(false);
-        refreshAllButton.setEnabled(false);
+        refreshFeedButton.setEnabled(false); refreshAllButton.setEnabled(false);
         setStatus("正在刷新: " + feed.getName() + "...");
-
-        SwingWorker<Feed, Void> worker = new SwingWorker<>() {
+        new SwingWorker<Feed, Void>() {
             @Override
             protected Feed doInBackground() throws Exception {
                 return feedService.fetchFeed(feed.getUrl(), feed.getName());
             }
-
             @Override
             protected void done() {
-                refreshFeedButton.setEnabled(true);
-                refreshAllButton.setEnabled(true);
+                refreshFeedButton.setEnabled(true); refreshAllButton.setEnabled(true);
                 try {
-                    Feed updated = get();
-                    // Update the feed in the list
-                    for (int i = 0; i < feeds.size(); i++) {
-                        if (feeds.get(i).getUrl().equals(updated.getUrl())) {
-                            feeds.get(i).setArticles(updated.getArticles());
-                            feeds.get(i).setDescription(updated.getDescription());
-                            feeds.get(i).setLastUpdated(updated.getLastUpdated());
-                            feeds.get(i).setUnreadCount(updated.getArticleCount());
+                    Feed u = get();
+                    for (Feed f : feeds) {
+                        if (f.getUrl().equals(u.getUrl())) {
+                            f.setArticles(u.getArticles());
+                            f.setDescription(u.getDescription());
+                            f.setLastUpdated(u.getLastUpdated());
                             break;
                         }
                     }
-
-                    // Update the table if this feed is currently selected
-                    if (selectedFeed != null && selectedFeed.getUrl().equals(updated.getUrl())) {
-                        selectedFeed.setArticles(updated.getArticles());
-                        articleTableModel.setArticles(updated.getArticles());
-                    }
-
-                    feedList.repaint();
-                    updateUnreadLabel();
-                    setStatus("刷新完成: " + feed.getName() + " - " + updated.getArticleCount() + " 篇文章");
-                } catch (InterruptedException | ExecutionException e) {
-                    setStatus("刷新订阅出错: " + e.getMessage());
+                    rebuildTree(); updateStats();
+                    setStatus("刷新完成: " + feed.getName() + " - " + u.getArticleCount() + " 篇文章");
+                } catch (Exception ex) {
+                    setStatus("刷新出错: " + ex.getMessage());
                     JOptionPane.showMessageDialog(MainFrame.this,
-                            "无法获取订阅:\n" + feed.getUrl() + "\n\n" + e.getCause().getMessage(),
-                            "订阅错误", JOptionPane.ERROR_MESSAGE);
+                            "无法获取订阅:\n" + feed.getUrl(), "订阅错误", JOptionPane.ERROR_MESSAGE);
                 }
             }
-        };
-        worker.execute();
+        }.execute();
     }
 
-    // ==================== Event Handlers ====================
+    // ==================== 内容 ====================
 
-    private void onFeedSelectionChanged(ListSelectionEvent e) {
-        if (e.getValueIsAdjusting()) {
-            return;
-        }
+    private void displayArticleContent(Article a) {
+        StringBuilder h = new StringBuilder(2048);
+        h.append("<html><head><style>");
+        h.append("body{font-family:\"PingFang SC\",sans-serif;padding:28px 32px;line-height:1.8;color:#2c2c2e;max-width:780px;margin:0 auto;background:#fff}");
+        h.append("h1{font-size:22px;color:#1a1a2e;margin-bottom:6px;font-weight:700;letter-spacing:-.3px}");
+        h.append("h2{font-size:17px;color:#333;margin:24px 0 10px}h3{font-size:15px;color:#444;margin:18px 0 8px}");
+        h.append(".meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:#999;font-size:12px;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid #f0f0f0}");
+        h.append(".meta-item{display:inline-flex;align-items:center;gap:4px}.meta-label{color:#bbb}");
+        h.append("a{color:#3b5fd9;text-decoration:none}a:hover{text-decoration:underline}");
+        h.append("img,video{max-width:100%;height:auto;border-radius:8px;margin:12px 0}");
+        h.append("pre{background:#f6f8fa;padding:16px;border-radius:8px;overflow-x:auto;font-size:13px;line-height:1.5;border:1px solid #e8eaed}");
+        h.append("code{background:#f1f3f5;padding:2px 6px;border-radius:4px;font-size:13px}pre code{background:none;padding:0}");
+        h.append("blockquote{border-left:3px solid #667eea;margin:16px 0;padding:10px 18px;background:#f8f9ff;color:#555;border-radius:0 8px 8px 0}");
+        h.append("p{margin:10px 0}ul,ol{padding-left:24px}li{margin:4px 0}");
+        h.append(".origin-link{display:inline-block;margin-top:28px;padding:10px 20px;background:#f0f4ff;border-radius:10px;font-size:13px;color:#3b5fd9;text-decoration:none;font-weight:500}");
+        h.append(".origin-link:hover{background:#e0e8ff}");
+        h.append("</style></head><body>");
 
-        int selectedIndex = feedList.getSelectedIndex();
-        boolean hasSelection = selectedIndex >= 0;
+        h.append("<h1>").append(escHtml(a.getTitle())).append("</h1>");
+        h.append("<div class=meta>");
+        if (a.getFeedName() != null && !a.getFeedName().isEmpty())
+            h.append("<span class=meta-item><span class=meta-label>订阅源</span> ").append(escHtml(a.getFeedName())).append("</span>");
+        if (a.getAuthor() != null && !a.getAuthor().isEmpty())
+            h.append("<span class=meta-item><span class=meta-label>作者</span> ").append(escHtml(a.getAuthor())).append("</span>");
+        if (a.getPubDate() != null)
+            h.append("<span class=meta-item><span class=meta-label>发布</span> ").append(a.getPubDate().toString()).append("</span>");
+        h.append("</div>");
 
-        removeButton.setEnabled(hasSelection);
-        refreshFeedButton.setEnabled(hasSelection);
+        String c = a.getContent();
+        if (c != null && !c.isBlank()) h.append(c);
+        else h.append("<p><em>暂无内容</em></p>");
 
-        if (hasSelection) {
-            selectedFeed = feeds.get(selectedIndex);
-            articleTableModel.setArticles(selectedFeed.getArticles());
-            setStatus("订阅: " + selectedFeed.getName() + " (" + selectedFeed.getArticleCount() + " 篇文章)");
+        if (a.getLink() != null && !a.getLink().isEmpty())
+            h.append("<a class=origin-link href='").append(a.getLink()).append("'>📎 阅读原文 →</a>");
+        h.append("</body></html>");
 
-            // 清空内容面板提示
-            contentPane.setText("<html><body style='font-family:\"PingFang SC\",sans-serif;padding:30px;text-align:center;color:#999;'><p style='margin-top:60px;'>← 选择一篇文章来阅读</p></body></html>");
-        } else {
-            selectedFeed = null;
-            articleTableModel.clear();
-        }
-    }
-
-    private void onArticleSelectionChanged(ListSelectionEvent e) {
-        if (e.getValueIsAdjusting()) {
-            return;
-        }
-
-        int selectedRow = articleTable.getSelectedRow();
-        if (selectedRow >= 0) {
-            // Convert view index to model index (accounts for sorting)
-            int modelRow = articleTable.convertRowIndexToModel(selectedRow);
-            selectedArticle = articleTableModel.getArticleAt(modelRow);
-
-            if (selectedArticle != null) {
-                selectedArticle.markAsRead();
-                displayArticleContent(selectedArticle);
-                updateUnreadLabel();
-            }
-        }
-    }
-
-    // ==================== Content Display ====================
-
-    private void displayArticleContent(Article article) {
-        StringBuilder html = new StringBuilder();
-        html.append("<html><head><style>");
-        html.append("body { font-family: \"PingFang SC\", -apple-system, \"Segoe UI\", sans-serif; ");
-        html.append("  padding: 28px 32px; line-height: 1.8; color: #2c2c2e; max-width: 780px; ");
-        html.append("  margin: 0 auto; background: #fff; }");
-        html.append("h1 { font-size: 22px; color: #1a1a2e; margin-bottom: 6px; font-weight: 700; ");
-        html.append("  letter-spacing: -0.3px; }");
-        html.append("h2 { font-size: 17px; color: #333; margin: 24px 0 10px; }");
-        html.append("h3 { font-size: 15px; color: #444; margin: 18px 0 8px; }");
-        html.append(".meta { display: flex; flex-wrap: wrap; gap: 6px 18px; color: #999; font-size: 12px; ");
-        html.append("  margin-bottom: 24px; padding-bottom: 16px; ");
-        html.append("  border-bottom: 1px solid #f0f0f0; }");
-        html.append(".meta-item { display: inline-flex; align-items: center; gap: 4px; }");
-        html.append(".meta-label { color: #bbb; }");
-        html.append("a { color: #3b5fd9; text-decoration: none; }");
-        html.append("a:hover { text-decoration: underline; }");
-        html.append("img, video { max-width: 100%; height: auto; border-radius: 8px; margin: 12px 0; }");
-        html.append("pre { background: #f6f8fa; padding: 16px; border-radius: 8px; overflow-x: auto; ");
-        html.append("  font-size: 13px; line-height: 1.5; border: 1px solid #e8eaed; }");
-        html.append("code { background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 13px; }");
-        html.append("pre code { background: none; padding: 0; }");
-        html.append("blockquote { border-left: 3px solid #667eea; margin: 16px 0; padding: 10px 18px; ");
-        html.append("  background: #f8f9ff; color: #555; border-radius: 0 8px 8px 0; }");
-        html.append("p { margin: 10px 0; }");
-        html.append("ul, ol { padding-left: 24px; }");
-        html.append("li { margin: 4px 0; }");
-        html.append(".origin-link { display: inline-block; margin-top: 28px; padding: 10px 20px; ");
-        html.append("  background: #f0f4ff; border-radius: 10px; font-size: 13px; color: #3b5fd9; ");
-        html.append("  text-decoration: none; font-weight: 500; }");
-        html.append(".origin-link:hover { background: #e0e8ff; }");
-        html.append("</style></head><body>");
-
-        html.append("<h1>").append(escapeHtml(article.getTitle())).append("</h1>");
-
-        html.append("<div class='meta'>");
-        if (article.getFeedName() != null && !article.getFeedName().isEmpty()) {
-            html.append("<span class='meta-item'><span class='meta-label'>订阅源</span> ")
-                    .append(escapeHtml(article.getFeedName())).append("</span>");
-        }
-        if (article.getAuthor() != null && !article.getAuthor().isEmpty()) {
-            html.append("<span class='meta-item'><span class='meta-label'>作者</span> ")
-                    .append(escapeHtml(article.getAuthor())).append("</span>");
-        }
-        if (article.getPubDate() != null) {
-            html.append("<span class='meta-item'><span class='meta-label'>发布</span> ")
-                    .append(article.getPubDate().toString()).append("</span>");
-        }
-        html.append("</div>");
-
-        // 文章内容
-        String content = article.getContent();
-        if (content != null && !content.isBlank()) {
-            html.append(content);
-        } else if (article.getDescription() != null && !article.getDescription().isBlank()) {
-            html.append(article.getDescription());
-        } else {
-            html.append("<p><em>暂无内容</em></p>");
-        }
-
-        // 原文链接
-        if (article.getLink() != null && !article.getLink().isEmpty()) {
-            html.append("<a class='origin-link' href='").append(article.getLink())
-                    .append("'>📎 阅读原文 →</a>");
-        }
-
-        html.append("</body></html>");
-
-        contentPane.setText(html.toString());
+        contentPane.setText(h.toString());
         contentPane.setCaretPosition(0);
     }
 
-    private String escapeHtml(String text) {
-        if (text == null) return "";
-        return text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&#39;");
-    }
-
-    // ==================== Actions ====================
-
-    private void openSelectedArticleInBrowser() {
-        if (selectedArticle == null) {
-            return;
-        }
-
-        String link = selectedArticle.getLink();
-        if (link == null || link.isEmpty()) {
-            setStatus("该文章没有可用的链接");
-            return;
-        }
-
+    private void openInBrowser(Article a) {
+        if (a.getLink() == null || a.getLink().isEmpty()) { setStatus("该文章没有可用的链接"); return; }
         try {
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-                Desktop.getDesktop().browse(URI.create(link));
-                setStatus("已在浏览器中打开: " + link);
-            } else {
-                setStatus("当前平台不支持打开浏览器");
-            }
-        } catch (Exception e) {
-            setStatus("无法打开浏览器: " + e.getMessage());
-        }
+                Desktop.getDesktop().browse(URI.create(a.getLink()));
+                setStatus("已在浏览器中打开: " + a.getLink());
+            } else setStatus("当前平台不支持打开浏览器");
+        } catch (Exception e) { setStatus("无法打开浏览器: " + e.getMessage()); }
     }
 
-    private void markAllAsRead() {
-        for (Feed feed : feeds) {
-            for (Article article : feed.getArticles()) {
-                article.setRead(true);
-            }
-            feed.setUnreadCount(0);
-        }
-        feedList.repaint();
-        updateUnreadLabel();
-        setStatus("已将所有文章标记为已读");
-    }
+    // ==================== 导入/导出 ====================
 
     private void importOpml() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("导入 OPML 文件");
-        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
-                "OPML 文件 (*.opml, *.xml)", "opml", "xml"));
-
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                List<Feed> importedFeeds = parseOpml(chooser.getSelectedFile().getAbsolutePath());
-                for (Feed feed : importedFeeds) {
-                    if (!feeds.contains(feed)) {
-                        feeds.add(feed);
-                        feedListModel.addElement(feed);
-                    }
-                }
-                saveFeeds();
-                updateUnreadLabel();
-                setStatus("从 OPML 导入了 " + importedFeeds.size() + " 个订阅");
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(this,
-                        "导入 OPML 出错: " + e.getMessage(),
-                        "导入错误", JOptionPane.ERROR_MESSAGE);
-            }
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("导入 OPML 文件");
+        fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("OPML 文件 (*.opml, *.xml)", "opml", "xml"));
+        if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            List<Feed> imp = parseOpml(fc.getSelectedFile().getAbsolutePath());
+            for (Feed f : imp) if (!feeds.contains(f)) feeds.add(f);
+            saveFeeds(); rebuildTree(); updateStats();
+            setStatus("从 OPML 导入了 " + imp.size() + " 个订阅");
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "导入 OPML 出错: " + e.getMessage(), "导入错误", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    private List<Feed> parseOpml(String filePath) throws Exception {
-        List<Feed> result = new ArrayList<>();
-        javax.xml.parsers.DocumentBuilderFactory factory = javax.xml.parsers.DocumentBuilderFactory.newInstance();
-        javax.xml.parsers.DocumentBuilder builder = factory.newDocumentBuilder();
-        org.w3c.dom.Document doc = builder.parse(filePath);
-
-        org.w3c.dom.NodeList outlines = doc.getElementsByTagName("outline");
-        for (int i = 0; i < outlines.getLength(); i++) {
-            org.w3c.dom.Element outline = (org.w3c.dom.Element) outlines.item(i);
-            String xmlUrl = outline.getAttribute("xmlUrl");
-            String title = outline.getAttribute("title");
-            if (xmlUrl != null && !xmlUrl.isEmpty()) {
-                if (title == null || title.isEmpty()) {
-                    title = outline.getAttribute("text");
-                }
-                if (title == null || title.isEmpty()) {
-                    title = xmlUrl;
-                }
-                result.add(new Feed(title, xmlUrl));
+    private List<Feed> parseOpml(String path) throws Exception {
+        List<Feed> r = new ArrayList<>();
+        javax.xml.parsers.DocumentBuilderFactory f = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+        org.w3c.dom.Document d = f.newDocumentBuilder().parse(path);
+        org.w3c.dom.NodeList nl = d.getElementsByTagName("outline");
+        for (int i = 0; i < nl.getLength(); i++) {
+            org.w3c.dom.Element el = (org.w3c.dom.Element) nl.item(i);
+            String xu = el.getAttribute("xmlUrl"), t = el.getAttribute("title");
+            if (xu != null && !xu.isEmpty()) {
+                if (t == null || t.isEmpty()) t = el.getAttribute("text");
+                if (t == null || t.isEmpty()) t = xu;
+                r.add(new Feed(t, xu));
             }
         }
-        return result;
+        return r;
     }
 
     private void exportOpml() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("导出 OPML 文件");
-        chooser.setSelectedFile(new java.io.File("rss-feeds.opml"));
-        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
-                "OPML 文件 (*.opml)", "opml"));
-
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                String path = chooser.getSelectedFile().getAbsolutePath();
-                if (!path.endsWith(".opml")) {
-                    path += ".opml";
-                }
-                writeOpml(path);
-                setStatus("已导出 " + feeds.size() + " 个订阅到 OPML");
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(this,
-                        "导出 OPML 出错: " + e.getMessage(),
-                        "导出错误", JOptionPane.ERROR_MESSAGE);
-            }
+        JFileChooser fc = new JFileChooser();
+        fc.setDialogTitle("导出 OPML 文件");
+        fc.setSelectedFile(new java.io.File("rss-feeds.opml"));
+        fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("OPML 文件 (*.opml)", "opml"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            String p = fc.getSelectedFile().getAbsolutePath();
+            if (!p.endsWith(".opml")) p += ".opml";
+            writeOpml(p);
+            setStatus("已导出 " + feeds.size() + " 个订阅到 OPML");
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "导出 OPML 出错: " + e.getMessage(), "导出错误", JOptionPane.ERROR_MESSAGE);
         }
     }
 
-    private void writeOpml(String filePath) throws IOException {
-        StringBuilder xml = new StringBuilder();
-        xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-        xml.append("<opml version=\"2.0\">\n");
-        xml.append("  <head>\n");
-        xml.append("    <title>RSS Reader Subscriptions</title>\n");
-        xml.append("  </head>\n");
-        xml.append("  <body>\n");
-        for (Feed feed : feeds) {
-            xml.append("    <outline text=\"").append(escapeXml(feed.getName()))
-                    .append("\" title=\"").append(escapeXml(feed.getName()))
-                    .append("\" type=\"rss\" xmlUrl=\"").append(escapeXml(feed.getUrl())).append("\" />\n");
-        }
-        xml.append("  </body>\n");
-        xml.append("</opml>\n");
-
-        java.nio.file.Files.writeString(java.nio.file.Paths.get(filePath), xml.toString());
-    }
-
-    private String escapeXml(String text) {
-        if (text == null) return "";
-        return text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&apos;");
+    private void writeOpml(String path) throws IOException {
+        StringBuilder x = new StringBuilder(1024);
+        x.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\">\n<head><title>RSS Reader</title></head>\n<body>\n");
+        for (Feed f : feeds)
+            x.append("  <outline text=\"").append(escXml(f.getName())).append("\" title=\"").append(escXml(f.getName()))
+             .append("\" type=\"rss\" xmlUrl=\"").append(escXml(f.getUrl())).append("\"/>\n");
+        x.append("</body>\n</opml>\n");
+        java.nio.file.Files.writeString(java.nio.file.Paths.get(path), x.toString());
     }
 
     private void showAboutDialog() {
         JOptionPane.showMessageDialog(this,
-                """
-                        RSS 阅读器 v1.0
-
-                        基于 Java Swing 的桌面 RSS 订阅阅读器。
-
-                        • 添加和管理 RSS/Atom 订阅源
-                        • HTML 渲染阅读文章正文
-                        • 导入/导出 OPML 文件
-                        • 在浏览器中打开原文
-
-                        技术栈: Java 17 + Swing + Rome RSS 库
-                        """,
-                "关于 RSS 阅读器",
-                JOptionPane.INFORMATION_MESSAGE);
+                "RSS 阅读器 v1.0\n\n基于 Java Swing 的桌面 RSS 订阅阅读器。\n\n" +
+                "• 树形订阅源 + 文章层级展示\n• HTML 渲染阅读\n• OPML 导入/导出\n" +
+                "• 浏览器打开原文\n\n技术栈: Java 17 + Swing + Rome RSS 库\nMIT License",
+                "关于 RSS 阅读器", JOptionPane.INFORMATION_MESSAGE);
     }
 
-    // ==================== Helpers ====================
+    // ==================== 工具 ====================
 
-    private void setStatus(String message) {
-        statusLabel.setText(" " + message);
+    private void setStatus(String msg) { statusLabel.setText(" " + msg); }
+
+    private void updateStats() {
+        int tf = feeds.size();
+        int ta = feeds.stream().mapToInt(Feed::getArticleCount).sum();
+        statsLabel.setText(tf == 0 ? "  暂无订阅  " : String.format("  %d 个订阅 | %d 篇文章  ", tf, ta));
     }
 
-    private void updateUnreadLabel() {
-        int totalFeeds = feeds.size();
-        int totalArticles = feeds.stream().mapToInt(Feed::getArticleCount).sum();
-        long unreadFeeds = feeds.stream().filter(f -> f.getUnreadCount() > 0).count();
+    private static String escHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&#39;");
+    }
 
-        if (totalFeeds == 0) {
-            unreadLabel.setText("  暂无订阅  ");
-        } else {
-            unreadLabel.setText(String.format("  %d 个订阅 | %d 篇文章 | %d 个有未读  ",
-                    totalFeeds, totalArticles, unreadFeeds));
-        }
+    private static String escXml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&apos;");
     }
 }
