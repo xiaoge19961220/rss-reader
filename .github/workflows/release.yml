@@ -2,13 +2,8 @@ name: Auto Build & Release
 
 on:
   push:
-    branches:
-      - main
-      - master
-    paths:
-      - 'src/**'
-      - 'pom.xml'
-      - 'build-all.sh'
+    branches: [main, master]
+    paths: ['src/**', 'pom.xml', 'build-all.sh']
   workflow_dispatch:
 
 jobs:
@@ -22,7 +17,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -30,58 +24,76 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # ---- 从源码提取版本号 ----
-      - name: Extract version from AppConfig.java
+      # ---- 提取版本号 ----
+      - name: Extract version
         id: version
         run: |
           VERSION=$(grep 'VERSION = "' src/main/java/com/rssreader/AppConfig.java | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $VERSION"
 
-      # ---- 检查此版本是否已发布 ----
-      - name: Check if release already exists
+      # ---- 检查是否已发布 ----
+      - name: Check existing release
         id: check
         run: |
           if gh release view v${{ steps.version.outputs.version }} &>/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "⚠️ Release v${{ steps.version.outputs.version }} already exists, skipping."
+            echo "⚠️ v${{ steps.version.outputs.version }} already exists — skip"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- 构建标准 JAR ----
-      - name: Build standard JAR
-        if: steps.check.outputs.exists == 'false'
-        run: mvn clean package -DskipTests -q
-
-      # ---- 构建 Portable 包 ----
-      - name: Build portable package
+      # ---- 构建 (build-all.sh 内部已含 mvn package + jlink) ----
+      - name: Build
         if: steps.check.outputs.exists == 'false'
         run: |
           chmod +x build-all.sh
           ./build-all.sh
 
-      # ---- 创建 Release + 上传产物 ----
-      - name: Create Release & Upload
+      # ---- 确认产物 ----
+      - name: Verify artifacts
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          echo "=== target 目录 ==="
+          ls -lh target/*.jar target/*.zip 2>/dev/null || true
+          echo ""
+          echo "=== JAR ==="
+          ls -lh target/rss-reader-${{ steps.version.outputs.version }}.jar 2>/dev/null || echo "JAR 不存在!"
+          echo ""
+          echo "=== Portable ZIP ==="
+          ls -lh target/rss-reader-portable-${{ steps.version.outputs.version }}.zip 2>/dev/null || echo "Portable ZIP 不存在 (正常，CI 环境无 jlink 则跳过)"
+
+      # ---- 收集产物列表 ----
+      - name: Prepare release assets
+        id: assets
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          ASSETS="target/rss-reader-${{ steps.version.outputs.version }}.jar"
+          if [ -f "target/rss-reader-portable-${{ steps.version.outputs.version }}.zip" ]; then
+            ASSETS="$ASSETS,target/rss-reader-portable-${{ steps.version.outputs.version }}.zip"
+          fi
+          echo "files=$ASSETS" >> $GITHUB_OUTPUT
+          echo "Assets: $ASSETS"
+
+      # ---- 创建 Release ----
+      - name: Create Release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v1
         with:
           name: v${{ steps.version.outputs.version }}
           tag_name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
-          files: |
-            target/rss-reader-${{ steps.version.outputs.version }}.jar
-            target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
+          fail_on_unmatched_files: true
+          files: ${{ steps.assets.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Done
+      - name: Summary
         run: |
           if [ "${{ steps.check.outputs.exists }}" = "true" ]; then
-            echo "✅ Release already exists — skipped."
+            echo "⏭ Release 已存在，跳过"
           else
-            echo "✅ Release v${{ steps.version.outputs.version }} published!"
+            echo "✅ v${{ steps.version.outputs.version }} 发布完成"
           fi

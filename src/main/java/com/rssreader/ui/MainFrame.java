@@ -69,13 +69,10 @@ public class MainFrame extends JFrame {
         setLocationRelativeTo(null);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
-        // 延迟 3 秒后后台检测更新（等主界面渲染完成）
-        new javax.swing.Timer(3000, e -> checkForUpdates()).start();
-    }
-
-    /** 后台检测 GitHub Release 更新 */
-    private void checkForUpdates() {
-        UpdateDialog.showIfAvailable(this);
+        // 延迟 3 秒后后台检测更新（只执行一次）
+        javax.swing.Timer t = new javax.swing.Timer(3000, e -> UpdateDialog.showIfAvailable(this));
+        t.setRepeats(false);
+        t.start();
     }
 
     // ==================== UI ====================
