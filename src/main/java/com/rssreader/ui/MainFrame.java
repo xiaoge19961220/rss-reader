@@ -3,6 +3,7 @@ package com.rssreader.ui;
 import com.rssreader.model.Article;
 import com.rssreader.model.Feed;
 import com.rssreader.service.FeedService;
+import com.rssreader.update.UpdateDialog;
 import com.rssreader.util.FeedStorage;
 
 import javax.swing.*;
@@ -67,6 +68,14 @@ public class MainFrame extends JFrame {
         setMinimumSize(new Dimension(800, 500));
         setLocationRelativeTo(null);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+        // 延迟 3 秒后后台检测更新（等主界面渲染完成）
+        new javax.swing.Timer(3000, e -> checkForUpdates()).start();
+    }
+
+    /** 后台检测 GitHub Release 更新 */
+    private void checkForUpdates() {
+        UpdateDialog.showIfAvailable(this);
     }
 
     // ==================== UI ====================

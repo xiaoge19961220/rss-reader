@@ -1,0 +1,66 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'               # 推送 v1.0.0 等 tag 触发 release
+  workflow_dispatch:        # 允许手动触发
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # 创建 release 需要
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      # ---- 标准 JAR ----
+      - name: Build standard JAR
+        run: mvn clean package -DskipTests -q
+
+      - name: Upload standard JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: rss-reader-${{ steps.version.outputs.version }}.jar
+          path: target/rss-reader-${{ steps.version.outputs.version }}.jar
+
+      # ---- Portable 包 (内嵌 JRE) ----
+      - name: Build portable package
+        run: |
+          chmod +x build-all.sh
+          ./build-all.sh
+
+      - name: Upload portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: rss-reader-portable-${{ steps.version.outputs.version }}.zip
+          path: target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
+
+      # ---- 创建 GitHub Release ----
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            target/rss-reader-${{ steps.version.outputs.version }}.jar
+            target/rss-reader-portable-${{ steps.version.outputs.version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
